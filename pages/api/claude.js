@@ -15,7 +15,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 1500,
+        max_tokens: 4000,
         system: system,
         messages: messages,
       }),
@@ -23,8 +23,11 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    if (data.error) {
-      return res.status(500).json({ error: data.error.message || "Anthropic API error" });
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: data.error?.message || "Claude API error",
+        details: data,
+      });
     }
 
     return res.status(200).json(data);

@@ -135,6 +135,7 @@ async function createCampaign(token, adAccountId, plan) {
       objective: plan.campaign.objective,
       status: "PAUSED",
       special_ad_categories: JSON.stringify([]),
+      is_adset_budget_sharing_enabled: false,
     },
   });
 }

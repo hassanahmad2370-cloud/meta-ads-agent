@@ -133,7 +133,7 @@ async function createCampaign(token, adAccountId, plan) {
     method: "POST",
     body: {
       name: plan.campaign.name,
-      objective: plan.campaign.objective,
+      objective: "OUTCOME_TRAFFIC", // forced: always compatible with LINK_CLICKS below
       status: "PAUSED",
       special_ad_categories: JSON.stringify([]),
       is_adset_budget_sharing_enabled: false,
@@ -199,9 +199,9 @@ async function createAdSet(token, adAccountId, plan, campaignId) {
       name: plan.adset.name,
       campaign_id: campaignId,
       daily_budget: String(plan.adset.daily_budget_cents),
-      billing_event: plan.adset.billing_event || "IMPRESSIONS",
-      optimization_goal: plan.adset.optimization_goal || "LINK_CLICKS",
-      bid_strategy: plan.adset.bid_strategy || "LOWEST_COST_WITHOUT_CAP",
+      billing_event: "IMPRESSIONS",
+      optimization_goal: "LINK_CLICKS", // forced: matches OUTCOME_TRAFFIC objective
+      bid_strategy: "LOWEST_COST_WITHOUT_CAP",
       targeting: JSON.stringify(targeting),
       status: "PAUSED",
     },

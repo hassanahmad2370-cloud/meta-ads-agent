@@ -141,42 +141,19 @@ async function createCampaign(token, adAccountId, plan) {
   });
 }
 
-// Resolve plain city names (e.g. "Lahore") into valid Meta geo keys via the
-// adgeolocation search API. Falls back to country-level targeting if nothing
-// resolves, so the ad set always has a valid geo_locations object.
+// Reliable geo targeting. Targeting a city by radius through the Marketing API
+// keeps failing Meta's "radius not within bounds" check, so for a PAUSED review
+// campaign we target the COUNTRY (default Pakistan). The user narrows down to
+// the exact city/radius inside Ads Manager during review (campaign is paused).
 async function resolveGeo(token, rawGeo) {
   const countries = [];
   if (rawGeo && Array.isArray(rawGeo.countries)) {
     for (const c of rawGeo.countries) {
-      if (typeof c === "string" && c.trim().length === 2) countries.push(c.trim().toUpperCase());
-    }
-  }
-
-  const cityNames = [];
-  if (rawGeo && Array.isArray(rawGeo.cities)) {
-    for (const c of rawGeo.cities) {
-      if (typeof c === "string" && c.trim()) cityNames.push(c.trim());
-      else if (c && typeof c.name === "string" && c.name.trim()) cityNames.push(c.name.trim());
-    }
-  }
-
-  const cities = [];
-  for (const name of cityNames) {
-    try {
-      const search = await metaFetch(
-        `search?type=adgeolocation&location_types=${encodeURIComponent('["city"]')}&q=${encodeURIComponent(name)}&limit=1`,
-        token
-      );
-      if (search && Array.isArray(search.data) && search.data[0] && search.data[0].key) {
-        cities.push({ key: search.data[0].key, radius: 25, distance_unit: "mile" });
+      if (typeof c === "string" && c.trim().length === 2) {
+        countries.push(c.trim().toUpperCase());
       }
-    } catch (e) {
-      // ignore individual city resolution failures
     }
   }
-
-  // Prefer city-specific targeting when we resolved any; else country; else PK.
-  if (cities.length) return { cities };
   if (countries.length) return { countries };
   return { countries: ["PK"] };
 }
@@ -198,7 +175,7 @@ async function createAdSet(token, adAccountId, plan, campaignId) {
     body: {
       name: plan.adset.name,
       campaign_id: campaignId,
-      daily_budget: String(plan.adset.daily_budget_cents),
+      daily_budget: String(Math.max(parseInt(plan.adset.daily_budget_cents, 10) || 0, 30000)),
       billing_event: "IMPRESSIONS",
       optimization_goal: "LINK_CLICKS", // forced: matches OUTCOME_TRAFFIC objective
       bid_strategy: "LOWEST_COST_WITHOUT_CAP",
@@ -210,35 +187,23 @@ async function createAdSet(token, adAccountId, plan, campaignId) {
 
 async function createCreativeAndAd(token, adAccountId, plan, adsetId, pageId) {
   const id = adAccountId.startsWith("act_") ? adAccountId : `act_${adAccountId}`;
-  const isVideo = /\.(mp4|mov)(\?|$)/i.test(plan.ad.creative_url || "");
+  // Always build a standard IMAGE link ad. Video ads need a separate upload
+  // step (not implemented), so if the creative isn't a usable image URL we fall
+  // back to a placeholder image — this guarantees a valid creative every time.
+  const isImage = /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(plan.ad.creative_url || "");
+  const imageUrl = isImage ? plan.ad.creative_url : "https://via.placeholder.com/1080";
 
-  let objectStorySpec;
-  if (isVideo) {
-    objectStorySpec = {
-      page_id: pageId,
-      video_data: {
-        video_id: undefined, // would require a separate video upload step
-        message: plan.ad.primary_text,
-        title: plan.ad.headline,
-        call_to_action: {
-          type: plan.ad.call_to_action,
-          value: { link: plan.ad.destination_url },
-        },
-      },
-    };
-  } else {
-    objectStorySpec = {
-      page_id: pageId,
-      link_data: {
-        link: plan.ad.destination_url,
-        message: plan.ad.primary_text,
-        name: plan.ad.headline,
-        description: plan.ad.description,
-        picture: plan.ad.creative_url,
-        call_to_action: { type: plan.ad.call_to_action },
-      },
-    };
-  }
+  const objectStorySpec = {
+    page_id: pageId,
+    link_data: {
+      link: plan.ad.destination_url || "https://wa.me/923032760175",
+      message: plan.ad.primary_text || "",
+      name: plan.ad.headline || "",
+      description: plan.ad.description || "",
+      picture: imageUrl,
+      call_to_action: { type: plan.ad.call_to_action || "LEARN_MORE" },
+    },
+  };
 
   const creative = await metaFetch(`${id}/adcreatives`, token, {
     method: "POST",

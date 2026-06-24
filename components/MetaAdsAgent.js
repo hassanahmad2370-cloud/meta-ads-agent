@@ -28,7 +28,7 @@ Your job has two parts in every reply:
     "optimization_goal": "one of: REACH | LINK_CLICKS | LANDING_PAGE_VIEWS | CONVERSATIONS | OFFSITE_CONVERSIONS | THRUPLAY | APP_INSTALLS",
     "bid_strategy": "one of: LOWEST_COST_WITHOUT_CAP | LOWEST_COST_WITH_BID_CAP | COST_CAP",
     "targeting": {
-      "geo_locations": { "countries": ["ISO country codes"] },
+      "geo_locations": { "countries": ["ISO country code(s) like PK"], "cities": ["plain city names like Lahore — empty array if none"] },
       "age_min": integer,
       "age_max": integer,
       "genders": [1] or [2] or [1,2],
@@ -50,6 +50,7 @@ Rules:
 - If the user hasn't given you enough info to launch (no budget, no destination URL, no creative URL, unclear country/audience), set ready_to_launch to false and list exactly what's missing in missing_info, and ask for it conversationally in your text reply too. Do not invent a creative_url or destination_url.
 - IMPORTANT — read carefully: when you set ready_to_launch to true, the campaign_plan JSON block you output WILL be read by connected code that immediately calls the real Meta Marketing API and creates the actual Campaign, Ad Set, and Ad on the user's Meta account (in PAUSED status). This is not hypothetical and not future work — outputting this JSON IS the action of creating the campaign. You DO have the ability to create campaigns through this mechanism. NEVER say things like "I can't create campaigns myself," "main khud campaign create nahi kar sakta," "you'll need to create this yourself in Ads Manager," or anything implying you lack this capability — that is false. Once you have all required info, simply confirm you're creating it now (e.g. "Theek hai, campaign create kar raha hoon abhi") and output the JSON with ready_to_launch: true. Do not tell the user to go do it manually elsewhere.
 - CRITICAL, NO EXCEPTIONS: every single reply you send, no matter what the user says — even "hi", "thanks", a general question, or small talk — MUST end with a \`\`\`campaign_plan code block. This is a hard technical requirement, not optional. If there is no campaign being discussed yet, still output the block with ready_to_launch: false, missing_info listing what a campaign needs, and empty/null placeholder values for campaign/adset/ad fields (use empty strings, 0, or null — never omit the keys). The code that reads your reply will break if this block is missing. Do not explain or mention this block to the user; it is invisible to them.
+- TARGETING & OBJECTIVE (critical so the connected code launches reliably): the connected code always builds a standard LINK ad that sends people to destination_url (usually a wa.me / WhatsApp link). For this to validate on Meta, ALWAYS set campaign.objective to "OUTCOME_TRAFFIC", adset.optimization_goal to "LINK_CLICKS", adset.billing_event to "IMPRESSIONS", and adset.bid_strategy to "LOWEST_COST_WITHOUT_CAP" — unless the user explicitly insists on a different objective. For geo_locations put ISO country codes in "countries" and any specific city as a PLAIN English name in "cities" (e.g. "Lahore"); never invent numeric city keys, the code resolves them automatically. For ad.call_to_action use "CONTACT_US" when the destination is WhatsApp/messaging, otherwise "LEARN_MORE".
 - Always be specific with numbers — no vague "test different budgets", give one concrete recommendation.
 - Currency: if unknown, ask once and remember the ad account currency isn't known to you; assume the user's daily_budget number is already in their local currency's main unit unless they specify cents.
 - Respond in the same language the user writes in.`;
@@ -140,24 +141,67 @@ async function createCampaign(token, adAccountId, plan) {
   });
 }
 
+// Resolve plain city names (e.g. "Lahore") into valid Meta geo keys via the
+// adgeolocation search API. Falls back to country-level targeting if nothing
+// resolves, so the ad set always has a valid geo_locations object.
+async function resolveGeo(token, rawGeo) {
+  const countries = [];
+  if (rawGeo && Array.isArray(rawGeo.countries)) {
+    for (const c of rawGeo.countries) {
+      if (typeof c === "string" && c.trim().length === 2) countries.push(c.trim().toUpperCase());
+    }
+  }
+
+  const cityNames = [];
+  if (rawGeo && Array.isArray(rawGeo.cities)) {
+    for (const c of rawGeo.cities) {
+      if (typeof c === "string" && c.trim()) cityNames.push(c.trim());
+      else if (c && typeof c.name === "string" && c.name.trim()) cityNames.push(c.name.trim());
+    }
+  }
+
+  const cities = [];
+  for (const name of cityNames) {
+    try {
+      const search = await metaFetch(
+        `search?type=adgeolocation&location_types=${encodeURIComponent('["city"]')}&q=${encodeURIComponent(name)}&limit=1`,
+        token
+      );
+      if (search && Array.isArray(search.data) && search.data[0] && search.data[0].key) {
+        cities.push({ key: search.data[0].key, radius: 25, distance_unit: "mile" });
+      }
+    } catch (e) {
+      // ignore individual city resolution failures
+    }
+  }
+
+  // Prefer city-specific targeting when we resolved any; else country; else PK.
+  if (cities.length) return { cities };
+  if (countries.length) return { countries };
+  return { countries: ["PK"] };
+}
+
 async function createAdSet(token, adAccountId, plan, campaignId) {
   const id = adAccountId.startsWith("act_") ? adAccountId : `act_${adAccountId}`;
-  const t = plan.adset.targeting;
+  const t = (plan && plan.adset && plan.adset.targeting) || {};
+  const geo = await resolveGeo(token, t.geo_locations);
+
   const targeting = {
-    geo_locations: t.geo_locations,
-    age_min: t.age_min,
-    age_max: t.age_max,
-    genders: t.genders,
+    geo_locations: geo,
+    age_min: t.age_min || 18,
+    age_max: t.age_max || 65,
   };
+  if (Array.isArray(t.genders) && t.genders.length) targeting.genders = t.genders;
+
   return metaFetch(`${id}/adsets`, token, {
     method: "POST",
     body: {
       name: plan.adset.name,
       campaign_id: campaignId,
       daily_budget: String(plan.adset.daily_budget_cents),
-      billing_event: plan.adset.billing_event,
-      optimization_goal: plan.adset.optimization_goal,
-      bid_strategy: plan.adset.bid_strategy,
+      billing_event: plan.adset.billing_event || "IMPRESSIONS",
+      optimization_goal: plan.adset.optimization_goal || "LINK_CLICKS",
+      bid_strategy: plan.adset.bid_strategy || "LOWEST_COST_WITHOUT_CAP",
       targeting: JSON.stringify(targeting),
       status: "PAUSED",
     },
